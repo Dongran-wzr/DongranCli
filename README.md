@@ -227,3 +227,48 @@ MCP 工具名格式为：`mcp__server__tool`
 
 实现接口 `com.dr.tool.ToolProvider`，并在 `META-INF/services/com.dr.tool.ToolProvider` 注册实现类。  
 启动时自动加载插件工具。
+
+## 系统架构图
+
+```mermaid
+flowchart LR
+    U[User 用户] --> CLI[CLI 交互层\ncom.dr.cli.Main]
+    CLI --> AG[Agent 核心编排\ncom.dr.agent.Agent]
+    AG --> REACT[ReAct 执行器\nReActExecutor]
+    AG --> PLAN[Plan-and-Execute\ncom.dr.plan]
+    AG --> TEAM[Multi-Agent 协作\ncom.dr.team]
+
+    AG --> TOOL[工具注册与执行\ncom.dr.tool]
+    TOOL --> HITL[人工审批 HITL\napproval]
+    TOOL --> PAR[并行执行引擎\nexec]
+    TOOL --> MCPTOOL[MCP 工具映射]
+
+    AG --> MEM[记忆系统\ncom.dr.memory]
+    MEM --> STM[短期记忆]
+    MEM --> LTM[长期记忆]
+    MEM --> COMP[上下文压缩]
+    MEM --> BUDGET[Token 预算管理]
+
+    AG --> RAG[RAG 检索\ncom.dr.rag]
+    RAG --> CHUNK[AST/文本分块]
+    RAG --> VDB[SQLite 向量存储]
+    RAG --> GRAPH[代码关系图谱]
+    RAG --> SEARCHCODE[search_code 工具]
+
+    AG --> WEB[联网能力\ncom.dr.web]
+    WEB --> SP[SearchProvider 工厂]
+    WEB --> FETCH[网页抓取/正文提取]
+    WEB --> NP[网络安全策略\nSSRF/限流]
+
+    AG --> MCP[MCP 客户端管理\ncom.dr.mcp]
+    MCP --> STDIO[stdio 传输]
+    MCP --> SSE[http+sse 传输]
+    MCP --> JSONRPC[JSON-RPC]
+
+    AG --> LLM[LLM 网关\ncom.dr.llm.DSV4Client]
+    AG --> AUDIT[审计日志\ncom.dr.audit]
+
+    CFG[配置中心\n.env / 环境变量 / 系统属性] --> CLI
+    CFG --> MCP
+    CFG --> WEB
+```
