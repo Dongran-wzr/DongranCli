@@ -21,21 +21,31 @@ import java.util.Locale;
 
 public class Main {
     private static final String VERSION = "1.0.0";
+    private static final String ANSI_RESET = "\u001B[0m";
+    private static final String ANSI_BOLD_CYAN = "\u001B[1;36m";
+    private static final String ANSI_DIM = "\u001B[2m";
     private static final List<String> COMMAND_SUGGESTIONS = List.of(
             "/help", "/version", "/config", "/history", "/plan", "/team", "/mcp", "/hitl", "/clear", "/exit"
     );
     private static final String BANNER = """
-             ____                        _
-            |  _ \\  ___  _ __   __ _ _ __| |_ ___
-            | | | |/ _ \\| '_ \\ / _` | '__| __/ __|
-            | |_| | (_) | | | | (_| | |  | |_\\__ \\
-            |____/ \\___/|_| |_|\\__, |_|   \\__|___/
-                               |___/
+           
+            ░███████              ░██████  ░██         ░██████
+            ░██   ░██            ░██   ░██ ░██           ░██ \s
+            ░██    ░██ ░██░████ ░██        ░██           ░██ \s
+            ░██    ░██ ░███     ░██        ░██           ░██ \s
+            ░██    ░██ ░██      ░██        ░██           ░██ \s
+            ░██   ░██  ░██       ░██   ░██ ░██           ░██ \s
+            ░███████   ░██        ░██████  ░██████████ ░██████
+                                                             \s
+                                                             \s
+                                                             \s                                                                                                                 \s
+                                                                                                                                        \s
                      Dongran CLI
             """;
 
     public static void main(String[] args) {
-        if (args.length > 0 && "--version".equalsIgnoreCase(args[0])) {
+        StartupOptions options = StartupOptions.parse(args);
+        if (options.showVersion()) {
             System.out.println("Dongran CLI " + VERSION);
             return;
         }
@@ -63,13 +73,34 @@ public class Main {
             System.out.println("[Session] 已恢复上次会话。输入 /clear 清空。");
         }
 
-        printBanner();
+        printBanner(options);
         printWelcome();
         runLoop(agent, sessionStore, config, mcpServerManager);
     }
 
-    private static void printBanner() {
+    private static void printBanner(StartupOptions options) {
+        if (!options.showBanner()) {
+            return;
+        }
+        if (options.enableColor()) {
+            System.out.println(ANSI_BOLD_CYAN + BANNER + ANSI_RESET);
+            System.out.println(ANSI_DIM + "AI coding assistant in your terminal" + ANSI_RESET);
+            return;
+        }
         System.out.println(BANNER);
+        System.out.println("AI coding assistant in your terminal");
+    }
+
+    private static boolean supportsAnsiColor() {
+        String noColor = System.getenv("NO_COLOR");
+        if (noColor != null && !noColor.isBlank()) {
+            return false;
+        }
+        String term = System.getenv("TERM");
+        if (term != null && term.toLowerCase(Locale.ROOT).contains("dumb")) {
+            return false;
+        }
+        return System.console() != null;
     }
 
     private static void runLoop(Agent agent, SessionStore sessionStore, CliConfig config, McpServerManager mcpServerManager) {
@@ -79,6 +110,7 @@ public class Main {
                     .terminal(terminal)
                     .completer(new StringsCompleter(COMMAND_SUGGESTIONS))
                     .build();
+            enablePredictiveInput(reader);
 
             while (true) {
                 String input;
@@ -122,6 +154,7 @@ public class Main {
 
     private static void runLoopFallback(Agent agent, SessionStore sessionStore, CliConfig config, McpServerManager mcpServerManager) {
         java.util.Scanner scanner = new java.util.Scanner(System.in);
+        System.out.println("提示: 当前终端为基础输入模式，预测输入不可用。建议使用系统终端以启用预测输入。");
         while (true) {
             System.out.print("you> ");
             if (!scanner.hasNextLine()) {
@@ -155,6 +188,18 @@ public class Main {
             }
         }
         return bestDistance <= 3 ? best : null;
+    }
+
+    private static void enablePredictiveInput(LineReader reader) {
+        try {
+            Class<?> widgetClass = Class.forName("org.jline.widget.AutosuggestionWidgets");
+            Object widgets = widgetClass.getConstructor(LineReader.class).newInstance(reader);
+            widgetClass.getMethod("enable").invoke(widgets);
+        } catch (ClassNotFoundException ex) {
+            System.out.println("提示: 当前 JLine 依赖未包含预测输入组件，已使用普通补全。");
+        } catch (Exception ex) {
+            System.err.println("预测输入初始化失败，已回退为普通补全: " + ex.getMessage());
+        }
     }
 
     private static int levenshtein(String a, String b) {
@@ -286,6 +331,29 @@ public class Main {
                   /hitl     人工审批开关: /hitl on|off|status|reset
                   /clear    清空会话
                   /exit     退出
+                
+                启动参数:
+                  --version    显示版本后退出
+                  --no-banner  不显示启动 Banner
+                
+                输入增强:
+                  - 支持预测输入（基于命令与历史）
+                  - 按 Tab 查看补全，按 右箭头 接受预测
                 """);
+    }
+
+    private record StartupOptions(boolean showVersion, boolean showBanner, boolean enableColor) {
+        private static StartupOptions parse(String[] args) {
+            boolean showVersion = false;
+            boolean showBanner = true;
+            for (String arg : args) {
+                if ("--version".equalsIgnoreCase(arg)) {
+                    showVersion = true;
+                } else if ("--no-banner".equalsIgnoreCase(arg)) {
+                    showBanner = false;
+                }
+            }
+            return new StartupOptions(showVersion, showBanner, supportsAnsiColor());
+        }
     }
 }

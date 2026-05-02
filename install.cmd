@@ -31,12 +31,22 @@ echo [3/4] Writing launchers...
 )
 
 echo [4/4] Updating PATH...
-echo %PATH% | find /I "%BIN_DIR%" >nul
+set "PS_CMD=$bin=[Environment]::GetFolderPath('UserProfile') + '\\bin';"
+set "PS_CMD=%PS_CMD%$userPath=[Environment]::GetEnvironmentVariable('Path','User');"
+set "PS_CMD=%PS_CMD%$parts=@();"
+set "PS_CMD=%PS_CMD%if(-not [string]::IsNullOrWhiteSpace($userPath)){ foreach($p in ($userPath -split ';')){ if(-not [string]::IsNullOrWhiteSpace($p)){ $parts += $p } } };"
+set "PS_CMD=%PS_CMD%if($parts -contains $bin){ Write-Output 'PATH already contains user bin' }"
+set "PS_CMD=%PS_CMD%else {"
+set "PS_CMD=%PS_CMD%  $newPath = if($parts.Count -eq 0){ $bin } else { ($parts + $bin) -join ';' };"
+set "PS_CMD=%PS_CMD%  [Environment]::SetEnvironmentVariable('Path',$newPath,'User');"
+set "PS_CMD=%PS_CMD%  Write-Output 'PATH updated for user. Reopen terminal to take effect.'"
+set "PS_CMD=%PS_CMD%}"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "%PS_CMD%"
 if errorlevel 1 (
-  setx PATH "%PATH%;%BIN_DIR%" >nul
-  echo PATH updated for user. Reopen terminal to take effect.
-) else (
-  echo PATH already contains %BIN_DIR%
+  echo Failed to update user PATH automatically.
+  echo Please run in PowerShell:
+  echo   [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';%BIN_DIR%', 'User')
 )
 
 echo Done. Try: dongran
