@@ -2,6 +2,8 @@ package com.dr.tool;
 
 import com.dr.llm.DSV4Client;
 import com.dr.rag.SearchCodeService;
+import com.dr.web.WebFetchService;
+import com.dr.web.WebSearchService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -20,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -39,14 +42,18 @@ public class ToolRegistry {
     );
 
     private final ObjectMapper mapper = new ObjectMapper();
-    private final Map<String, RegisteredTool> tools = new HashMap<>();
+    private final Map<String, RegisteredTool> tools = new ConcurrentHashMap<>();
     private final Path workspaceRoot;
     private final ExecutorService processExecutor = Executors.newCachedThreadPool();
     private final SearchCodeService searchCodeService;
+    private final WebSearchService webSearchService;
+    private final WebFetchService webFetchService;
 
     public ToolRegistry(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot.toAbsolutePath().normalize();
         this.searchCodeService = new SearchCodeService(this.workspaceRoot, createInternalLlmClient());
+        this.webSearchService = new WebSearchService(this.workspaceRoot);
+        this.webFetchService = new WebFetchService();
         registerBuiltInTools();
         loadExternalProviders();
     }
@@ -93,6 +100,8 @@ public class ToolRegistry {
         registerListDir();
         registerRunCommand();
         registerSearchCode();
+        registerWebSearch();
+        registerWebFetch();
     }
 
     private void registerReadFile() {
@@ -198,6 +207,48 @@ public class ToolRegistry {
                         }
                     }
                     return searchCodeService.search(query, topK);
+                }
+        ));
+    }
+
+    private void registerWebSearch() {
+        registerTool(new RegisteredTool(
+                new ToolDefinition(
+                        "web_search",
+                        "联网搜索最新公开信息，返回标题/链接/摘要",
+                        createParameters(
+                                new Param("query", "string", "搜索关键词", true),
+                                new Param("num", "string", "返回结果数，默认 5", false)
+                        )
+                ),
+                args -> {
+                    String query = args.getOrDefault("query", "").trim();
+                    if (query.isBlank()) {
+                        return error("invalid_query", "query 不能为空");
+                    }
+                    int num = 5;
+                    try {
+                        num = Integer.parseInt(args.getOrDefault("num", "5"));
+                    } catch (Exception ignored) {
+                    }
+                    return webSearchService.search(query, num);
+                }
+        ));
+    }
+
+    private void registerWebFetch() {
+        registerTool(new RegisteredTool(
+                new ToolDefinition(
+                        "web_fetch",
+                        "抓取网页并提取正文内容",
+                        createParameters(new Param("url", "string", "网页 URL", true))
+                ),
+                args -> {
+                    String url = args.getOrDefault("url", "").trim();
+                    if (url.isBlank()) {
+                        return error("invalid_url", "url 不能为空");
+                    }
+                    return webFetchService.fetch(url);
                 }
         ));
     }

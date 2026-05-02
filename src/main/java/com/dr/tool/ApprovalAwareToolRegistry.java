@@ -1,5 +1,6 @@
 package com.dr.tool;
 
+import com.dr.audit.AuditLog;
 import com.dr.tool.approval.ApprovalDecision;
 import com.dr.tool.approval.ApprovalHandler;
 import com.dr.tool.approval.ApprovalPolicy;
@@ -25,6 +26,7 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
 
     private final ApprovalPolicy approvalPolicy;
     private final ApprovalHandler approvalHandler;
+    private final AuditLog auditLog;
     private final ObjectMapper mapper = new ObjectMapper();
     private volatile boolean hitlEnabled;
 
@@ -38,6 +40,7 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
         this.approvalPolicy = approvalPolicy;
         this.approvalHandler = approvalHandler;
         this.hitlEnabled = hitlEnabled;
+        this.auditLog = new AuditLog(workspaceRoot);
     }
 
     public static ApprovalAwareToolRegistry createDefault(Path workspaceRoot) {
@@ -53,6 +56,7 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
     @Override
     public String executeTool(String toolName, String argumentsJson) {
         if (!hitlEnabled) {
+            auditLog.log("hitl", "bypass", toolName);
             return super.executeTool(toolName, argumentsJson); // HITL 关闭时零开销路径
         }
 
@@ -87,11 +91,14 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
                     allowAllInSession = true;
                 }
                 if (!result.approved()) {
+                    auditLog.log("hitl", "deny", toolName);
                     return deny("approval_denied", "工具调用被人工审批拒绝: " + toolName);
                 }
                 SESSION_CACHE.put(fingerprint, true);
+                auditLog.log("hitl", "approve", toolName);
                 return super.executeTool(toolName, argumentsJson);
             } catch (Exception e) {
+                auditLog.log("hitl", "error", toolName + " -> " + e.getMessage());
                 return deny("approval_failed", "审批异常，按 fail-safe 拒绝: " + e.getMessage());
             }
         }

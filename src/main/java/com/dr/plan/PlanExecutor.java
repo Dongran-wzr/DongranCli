@@ -5,10 +5,16 @@ import com.dr.agent.Message;
 import com.dr.agent.ToolCall;
 import com.dr.llm.DSV4Client;
 import com.dr.tool.ToolRegistry;
+import com.dr.tool.exec.ParallelToolExecutionEngine;
+import com.dr.tool.exec.ToolExecutionResult;
+import com.dr.tool.exec.ToolInvocation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -20,13 +26,16 @@ public class PlanExecutor {
     private static final Logger LOG = LoggerFactory.getLogger(PlanExecutor.class);
     private static final int MAX_TOOL_ITERATIONS = 6;
     private static final int MAX_TASK_RETRIES = 2;
+    private static final Duration TOOL_BATCH_TIMEOUT = Duration.ofSeconds(30);
 
     private final DSV4Client llmClient;
     private final ToolRegistry toolRegistry;
+    private final ParallelToolExecutionEngine toolEngine;
 
     public PlanExecutor(DSV4Client llmClient, ToolRegistry toolRegistry) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.toolEngine = new ParallelToolExecutionEngine(toolRegistry);
     }
 
     public PlanExecutionReport execute(ExecutionPlan plan, List<Message> sharedHistory) {
@@ -40,10 +49,7 @@ public class PlanExecutor {
             }
 
             List<TaskRunResult> roundResults = executeReadyTasksInParallel(plan, ready, sharedHistory);
-            roundResults.sort((a, b) -> a.taskId().compareToIgnoreCase(b.taskId()));
-            for (TaskRunResult result : roundResults) {
-                sharedHistory.add(Message.assistant(result.message()));
-            }
+            writeRoundOutputOrdered(roundResults, sharedHistory);
             plan.markUnreachableAsSkipped();
         }
 
@@ -77,6 +83,23 @@ public class PlanExecutor {
             return results;
         } finally {
             pool.shutdown();
+        }
+    }
+
+    private void writeRoundOutputOrdered(List<TaskRunResult> roundResults, List<Message> sharedHistory) {
+        roundResults.sort((a, b) -> a.taskId().compareToIgnoreCase(b.taskId()));
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        for (TaskRunResult result : roundResults) {
+            byte[] line = (result.message() + System.lineSeparator()).getBytes(StandardCharsets.UTF_8);
+            buffer.write(line, 0, line.length);
+        }
+        String merged = new String(buffer.toByteArray(), StandardCharsets.UTF_8).trim();
+        if (!merged.isBlank()) {
+            for (String line : merged.split("\\R")) {
+                if (!line.isBlank()) {
+                    sharedHistory.add(Message.assistant(line));
+                }
+            }
         }
     }
 
@@ -119,9 +142,13 @@ public class PlanExecutor {
 
             if (response.hasToolCalls()) {
                 working.add(Message.assistant(response.content(), response.toolCalls()));
+                List<ToolInvocation> batch = new ArrayList<>();
                 for (ToolCall call : response.toolCalls()) {
-                    String toolResult = toolRegistry.executeTool(call.getName(), call.getArgumentsJson());
-                    working.add(Message.tool(call.getId(), toolResult));
+                    batch.add(new ToolInvocation(call.getId(), call.getName(), call.getArgumentsJson()));
+                }
+                List<ToolExecutionResult> results = toolEngine.executeBatch(batch, TOOL_BATCH_TIMEOUT);
+                for (ToolExecutionResult r : results) {
+                    working.add(Message.tool(r.toolCallId(), r.toToolMessageContent()));
                 }
                 continue;
             }

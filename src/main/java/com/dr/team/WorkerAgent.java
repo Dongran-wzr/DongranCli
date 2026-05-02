@@ -7,19 +7,26 @@ import com.dr.llm.DSV4Client;
 import com.dr.plan.ExecutionPlan;
 import com.dr.plan.Task;
 import com.dr.tool.ToolRegistry;
+import com.dr.tool.exec.ParallelToolExecutionEngine;
+import com.dr.tool.exec.ToolExecutionResult;
+import com.dr.tool.exec.ToolInvocation;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 public class WorkerAgent {
     private static final int MAX_TOOL_ITERATIONS = 6;
+    private static final Duration TOOL_BATCH_TIMEOUT = Duration.ofSeconds(30);
 
     private final DSV4Client llmClient;
     private final ToolRegistry toolRegistry;
+    private final ParallelToolExecutionEngine toolEngine;
 
     public WorkerAgent(DSV4Client llmClient, ToolRegistry toolRegistry) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.toolEngine = new ParallelToolExecutionEngine(toolRegistry);
     }
 
     public WorkerResult executeTask(ExecutionPlan plan, Task task, List<Message> sharedContext, int attempt, String reviewFeedback) {
@@ -32,9 +39,13 @@ public class WorkerAgent {
             ChatResponse response = llmClient.chat(working, toolRegistry.getToolDefinitions());
             if (response.hasToolCalls()) {
                 working.add(Message.assistant(response.content(), response.toolCalls()));
+                List<ToolInvocation> batch = new ArrayList<>();
                 for (ToolCall call : response.toolCalls()) {
-                    String toolResult = toolRegistry.executeTool(call.getName(), call.getArgumentsJson());
-                    working.add(Message.tool(call.getId(), toolResult));
+                    batch.add(new ToolInvocation(call.getId(), call.getName(), call.getArgumentsJson()));
+                }
+                List<ToolExecutionResult> results = toolEngine.executeBatch(batch, TOOL_BATCH_TIMEOUT);
+                for (ToolExecutionResult r : results) {
+                    working.add(Message.tool(r.toolCallId(), r.toToolMessageContent()));
                 }
                 continue;
             }

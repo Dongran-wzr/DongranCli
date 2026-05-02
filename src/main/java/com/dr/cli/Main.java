@@ -2,6 +2,8 @@ package com.dr.cli;
 
 import com.dr.agent.Agent;
 import com.dr.agent.Message;
+import com.dr.mcp.McpServerConfig;
+import com.dr.mcp.McpServerManager;
 import com.dr.tool.ApprovalAwareToolRegistry;
 import com.dr.tool.ToolRegistry;
 
@@ -51,6 +53,12 @@ public class Main {
         }
 
         ApprovalAwareToolRegistry toolRegistry = ApprovalAwareToolRegistry.createDefault(workspace);
+        McpServerManager mcpServerManager = new McpServerManager(workspace);
+        List<McpServerConfig> mcpConfigs = McpServerManager.parseFromEnv();
+        if (!mcpConfigs.isEmpty()) {
+            mcpServerManager.startAll(mcpConfigs, toolRegistry);
+            System.out.println("[MCP] 已加载: " + mcpServerManager.status());
+        }
         Agent agent = new Agent(config.apiKey(), config.model(), config.apiUrl(), toolRegistry, workspace);
         SessionStore sessionStore = new SessionStore(workspace);
 
@@ -62,14 +70,14 @@ public class Main {
 
         printBanner();
         printWelcome();
-        runLoop(agent, sessionStore, config);
+        runLoop(agent, sessionStore, config, mcpServerManager);
     }
 
     private static void printBanner() {
         System.out.println(BANNER);
     }
 
-    private static void runLoop(Agent agent, SessionStore sessionStore, CliConfig config) {
+    private static void runLoop(Agent agent, SessionStore sessionStore, CliConfig config, McpServerManager mcpServerManager) {
         Scanner scanner = new Scanner(System.in);
         while (true) {
             System.out.print("you> ");
@@ -81,7 +89,7 @@ public class Main {
                 continue;
             }
 
-            if (isLocalCommand(input, agent, sessionStore, config)) {
+            if (isLocalCommand(input, agent, sessionStore, config, mcpServerManager)) {
                 if ("/exit".equalsIgnoreCase(input)) {
                     break;
                 }
@@ -92,10 +100,20 @@ public class Main {
             System.out.println("assistant> " + response);
             sessionStore.save(agent.snapshotHistory());
         }
+        mcpServerManager.close();
     }
 
-    private static boolean isLocalCommand(String input, Agent agent, SessionStore sessionStore, CliConfig config) {
+    private static boolean isLocalCommand(String input, Agent agent, SessionStore sessionStore, CliConfig config, McpServerManager mcpServerManager) {
         String normalized = input.toLowerCase();
+        if (normalized.startsWith("/mcp")) {
+            String[] parts = input.trim().split("\\s+");
+            if (parts.length == 1 || "status".equalsIgnoreCase(parts[1])) {
+                System.out.println(mcpServerManager.status());
+            } else {
+                System.out.println("用法: /mcp [status]");
+            }
+            return true;
+        }
         if (normalized.startsWith("/hitl")) {
             String[] parts = input.trim().split("\\s+");
             ToolRegistry raw = agent.getToolRegistry();
@@ -190,6 +208,7 @@ public class Main {
                   /history  显示当前会话消息数量
                   /plan     显示最近一次 DAG 执行计划与状态
                   /team     多 Agent 模式开关: /team on|off|status|log
+                  /mcp      MCP 服务状态: /mcp status
                   /hitl     人工审批开关: /hitl on|off|status|reset
                   /clear    清空会话
                   /exit     退出

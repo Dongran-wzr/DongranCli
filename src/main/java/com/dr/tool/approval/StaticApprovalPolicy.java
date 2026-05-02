@@ -22,6 +22,9 @@ public class StaticApprovalPolicy implements ApprovalPolicy {
         if (MEDIUM_RISK.contains(t)) {
             return new ApprovalDecision(true, RiskLevel.MEDIUM, "中风险文件/项目写操作");
         }
+        if (t.startsWith("mcp__")) {
+            return new ApprovalDecision(true, RiskLevel.MEDIUM, "第三方 MCP 工具默认纳入人工审批");
+        }
         return ApprovalDecision.pass();
     }
 }

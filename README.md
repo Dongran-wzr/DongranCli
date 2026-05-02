@@ -15,6 +15,10 @@
 - RAG 检索：JavaParser AST 多粒度分块 + SQLite 向量库 + 混合检索
 - 代码图谱：支持 extends/implements/imports/calls/contains 关系与调用链查询
 - HITL 审批：危险工具人工确认、支持会话级“全部放行”缓存
+- 并行工具引擎：统一 4 路并发 + 批次超时取消，支持 ReAct/Plan/Multi-Agent
+- 联网搜索：策略模式 SearchProvider（智谱/SerpAPI/SearXNG）+ 自动热切换
+- 网页抓取：Jsoup Readability 两阶段正文提取 + 网络安全策略
+- MCP 集成：JSON-RPC 2.0 客户端 + stdio/http-sse 传输 + 多 Server 并行启动
 - 工具调用：`read_file` / `write_file` / `list_dir` / `run_command`
 - 安全边界：
   - 文件工具限制在工作区目录
@@ -47,8 +51,24 @@ java -jar target/DongranCli-1.0-SNAPSHOT.jar
 - `/plan`：显示最近一次 DAG 计划执行状态
 - `/team`：多 Agent 模式控制（`/team on|off|status|log`）
 - `/hitl`：人工审批控制（`/hitl on|off|status|reset`）
+- `/mcp`：查看 MCP 服务状态（`/mcp status`）
 - `/clear`：清空会话历史
 - `/exit`：退出
+
+## 联网配置
+
+- 搜索引擎选择：`SEARCH_PROVIDER=zhipu|serpapi|searxng`
+- 配置读取回退：`环境变量 -> 系统属性 -> .env`
+- 智谱：`ZHIPU_API_KEY`、可选 `ZHIPU_SEARCH_URL`
+- SerpAPI：`SERPAPI_API_KEY`
+- SearXNG：可选 `SEARXNG_BASE_URL`（默认 `https://searx.be`）
+
+## MCP 配置
+
+- 环境变量 `MCP_SERVERS` 启用多服务并行启动
+- 格式：`name|stdio|command|arg1,arg2;name2|http|https://your-mcp-host`
+- MCP 工具注册后名称空间为：`mcp__server__tool`
+- 所有 `mcp__` 工具默认进入 HITL 审批与审计日志
 
 ## 配置优先级
 

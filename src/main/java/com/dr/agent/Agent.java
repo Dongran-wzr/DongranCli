@@ -31,6 +31,7 @@ public class Agent {
     private final Planner planner;
     private final PlanExecutor executor;
     private final MultiAgentCoordinator multiAgentCoordinator;
+    private final ReActExecutor reActExecutor;
     private final List<Message> conversationHistory;
     private final LongTermMemoryStore longTermMemoryStore;
     private final MemoryRetriever memoryRetriever;
@@ -47,6 +48,7 @@ public class Agent {
         this.planner = new Planner(llmClient);
         this.executor = new PlanExecutor(llmClient, toolRegistry);
         this.multiAgentCoordinator = new MultiAgentCoordinator(llmClient, toolRegistry);
+        this.reActExecutor = new ReActExecutor(llmClient, toolRegistry);
         this.conversationHistory = new ArrayList<>();
         this.longTermMemoryStore = new LongTermMemoryStore(workspaceRoot);
         this.memoryRetriever = new MemoryRetriever();
@@ -68,6 +70,8 @@ public class Agent {
     4. 结果必须尽量可复制、可验证。
     5. 涉及代码定位、类关系、调用链时，优先调用 search_code 进行检索再回答。
     6. ReAct 与 Plan-and-Execute 模式都应主动利用 search_code 完成代码库理解。
+    7. 涉及实时信息、外部网页或联网验证时，优先使用 web_search / web_fetch 工具。
+    8. 是否联网由你自主判断，若本地上下文不足应主动触发联网工具。
     """;
 
     public String run(String userInput) {
@@ -110,12 +114,12 @@ public class Agent {
             return finalAnswer;
         } catch (Exception e) {
             LOG.warn("Plan-and-Execute 执行失败，降级直接对话", e);
-            ChatResponse fallback = llmClient.chat(managedContext, toolRegistry.getToolDefinitions());
-            conversationHistory.add(Message.assistant(fallback.content()));
-            shortTermMemory.addTurn(userInput, fallback.content());
-            longTermMemoryStore.appendMemory(userInput, fallback.content());
+            String fallback = reActExecutor.execute(managedContext);
+            conversationHistory.add(Message.assistant(fallback));
+            shortTermMemory.addTurn(userInput, fallback);
+            longTermMemoryStore.appendMemory(userInput, fallback);
             trimHistory();
-            return fallback.content();
+            return fallback;
         }
     }
 

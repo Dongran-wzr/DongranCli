@@ -27,17 +27,20 @@ import java.util.concurrent.TimeUnit;
 public class MultiAgentCoordinator {
     private static final Logger LOG = LoggerFactory.getLogger(MultiAgentCoordinator.class);
     private static final int MAX_RETRIES = 2;
+    private static final int MAX_WORKERS = 4;
 
     private final DSV4Client llmClient;
     private final Planner planner;
-    private final WorkerAgent workerAgent;
-    private final ReviewerAgent reviewerAgent;
+    private final BlockingQueue<WorkerAgent> availableWorkers;
 
     public MultiAgentCoordinator(DSV4Client llmClient, ToolRegistry toolRegistry) {
         this.llmClient = llmClient;
         this.planner = new Planner(llmClient);
-        this.workerAgent = new WorkerAgent(llmClient, toolRegistry);
-        this.reviewerAgent = new ReviewerAgent(llmClient);
+        this.availableWorkers = new LinkedBlockingQueue<>();
+        int workerCount = Math.max(1, Math.min(Runtime.getRuntime().availableProcessors(), MAX_WORKERS));
+        for (int i = 0; i < workerCount; i++) {
+            availableWorkers.offer(new WorkerAgent(llmClient, toolRegistry));
+        }
     }
 
     public TeamExecutionResult execute(String objective, List<Message> baseContext) {
@@ -57,7 +60,7 @@ public class MultiAgentCoordinator {
         Object lock = new Object();
         enqueueReadyTasks(plan, queue, queued, lock);
 
-        int workerThreads = Math.max(1, Math.min(Runtime.getRuntime().availableProcessors(), 4));
+        int workerThreads = Math.max(1, Math.min(availableWorkers.size(), MAX_WORKERS));
         ExecutorService pool = Executors.newFixedThreadPool(workerThreads);
         for (int i = 0; i < workerThreads; i++) {
             pool.submit(() -> workerLoop(plan, baseContext, queue, queued, bus, lock));
@@ -126,9 +129,22 @@ public class MultiAgentCoordinator {
             ));
 
             long started = System.currentTimeMillis();
-            WorkerResult workerResult = workerAgent.executeTask(plan, task, baseContext, item.attempt(), item.lastReviewFeedback());
+            WorkerResult workerResult;
+            WorkerAgent worker = null;
+            try {
+                worker = availableWorkers.take();
+                workerResult = worker.executeTask(plan, task, baseContext, item.attempt(), item.lastReviewFeedback());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                workerResult = new WorkerResult(false, null, "worker 池分配中断", 0);
+            } finally {
+                if (worker != null) {
+                    availableWorkers.offer(worker);
+                }
+            }
+            ReviewerAgent stepReviewer = new ReviewerAgent(llmClient); // 每步独立创建，避免对话历史竞争
             ReviewResult reviewResult = workerResult.success()
-                    ? reviewerAgent.review(task, workerResult.output())
+                    ? stepReviewer.review(task, workerResult.output())
                     : new ReviewResult(false, workerResult.error());
 
             synchronized (lock) {
