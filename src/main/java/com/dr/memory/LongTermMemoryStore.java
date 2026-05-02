@@ -2,6 +2,7 @@ package com.dr.memory;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,7 +19,9 @@ import java.util.UUID;
 public class LongTermMemoryStore {
     private static final Logger LOG = LoggerFactory.getLogger(LongTermMemoryStore.class);
     private static final int MAX_ENTRIES = 500;
-    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .findAndRegisterModules();
 
     private final Path filePath;
 

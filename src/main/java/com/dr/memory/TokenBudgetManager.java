@@ -35,7 +35,7 @@ public class TokenBudgetManager {
             result.add(Message.system(memoryBlock));
         }
 
-        int available = Math.max(500, hardBudgetTokens - reserveTokens - estimateTokens(result));
+        int available = Math.max(0, hardBudgetTokens - reserveTokens - estimateTokens(result));
         List<Message> tail = recentMessages(fullHistory);
 
         int used = 0;

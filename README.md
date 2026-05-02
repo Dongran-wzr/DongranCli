@@ -57,18 +57,177 @@ java -jar target/DongranCli-1.0-SNAPSHOT.jar
 
 ## 联网配置
 
-- 搜索引擎选择：`SEARCH_PROVIDER=zhipu|serpapi|searxng`
-- 配置读取回退：`环境变量 -> 系统属性 -> .env`
-- 智谱：`ZHIPU_API_KEY`、可选 `ZHIPU_SEARCH_URL`
-- SerpAPI：`SERPAPI_API_KEY`
-- SearXNG：可选 `SEARXNG_BASE_URL`（默认 `https://searx.be`）
+### 1. 先理解这几个工具
+
+- `web_search`：联网搜索网页，返回标题、链接、摘要
+- `web_fetch`：抓取指定网页并提取正文内容
+- Agent 会根据问题自动决定是否联网调用这两个工具
+
+### 2. 配置读取顺序（很重要）
+
+程序读取配置优先级：
+
+`环境变量 > Java 系统属性(-Dxxx=yyy) > 工作区 .env`
+
+也就是说，同一个配置项如果你都写了，最终以环境变量为准。
+
+### 3. 最简单配置（小白推荐）
+
+在项目根目录创建 `.env` 文件（如果已有就直接编辑），写入：
+
+```env
+SEARCH_PROVIDER=searxng
+SEARXNG_BASE_URL=https://searx.be
+```
+
+这是免 Key 的方案，最容易跑通。
+
+### 4. 三种搜索引擎怎么选
+
+#### A. SearXNG（推荐新手先用）
+
+- 适合：先跑通功能，不想申请 Key
+- 必填：`SEARCH_PROVIDER=searxng`
+- 可选：`SEARXNG_BASE_URL`（不填默认 `https://searx.be`）
+
+示例：
+
+```env
+SEARCH_PROVIDER=searxng
+SEARXNG_BASE_URL=https://searx.be
+```
+
+#### B. SerpAPI
+
+- 适合：结果稳定、商业搜索 API
+- 必填：`SEARCH_PROVIDER=serpapi` + `SERPAPI_API_KEY`
+
+示例：
+
+```env
+SEARCH_PROVIDER=serpapi
+SERPAPI_API_KEY=你的_serpapi_key
+```
+
+#### C. 智谱（Zhipu）
+
+- 适合：你已有智谱账号和 Key
+- 必填：`SEARCH_PROVIDER=zhipu` + `ZHIPU_API_KEY`
+- 可选：`ZHIPU_SEARCH_URL`（默认已内置）
+
+示例：
+
+```env
+SEARCH_PROVIDER=zhipu
+ZHIPU_API_KEY=你的_zhipu_key
+ZHIPU_SEARCH_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
+```
+
+### 5. Windows PowerShell 设置环境变量（可选）
+
+如果你不想写 `.env`，也可直接设环境变量：
+
+- 当前终端临时生效：
+
+```powershell
+$env:SEARCH_PROVIDER="serpapi"
+$env:SERPAPI_API_KEY="你的key"
+```
+
+- 永久生效（新开终端/重启 IDE 后生效）：
+
+```powershell
+setx SEARCH_PROVIDER "serpapi"
+setx SERPAPI_API_KEY "你的key"
+```
+
+### 6. 常见问题排查
+
+- 报 `web_search_failed`：
+  - 检查 `SEARCH_PROVIDER` 拼写是否正确（只能是 `zhipu|serpapi|searxng`）
+  - 检查对应 Key 是否存在、是否过期
+- 抓取失败 `web_fetch_failed`：
+  - URL 是否可公网访问
+  - 是否被安全策略拦截（内网地址、localhost、非法 scheme 会被拒绝）
 
 ## MCP 配置
 
-- 环境变量 `MCP_SERVERS` 启用多服务并行启动
-- 格式：`name|stdio|command|arg1,arg2;name2|http|https://your-mcp-host`
-- MCP 工具注册后名称空间为：`mcp__server__tool`
-- 所有 `mcp__` 工具默认进入 HITL 审批与审计日志
+### 1. MCP 是什么
+
+- MCP Server 可以给 CLI 提供第三方工具能力
+- 启动后会自动发现工具并注册到 Agent
+- 工具名会自动加命名空间：`mcp__服务名__工具名`
+
+例如：`mcp__git__status`
+
+### 2. 配置入口
+
+通过环境变量 `MCP_SERVERS` 配置一个或多个 Server。
+
+### 3. 配置格式（重点）
+
+整体结构：
+
+`server1;server2;server3`
+
+每个 server 两种写法：
+
+- `stdio` 模式：`name|stdio|command|arg1,arg2,arg3`
+- `http` 模式：`name|http|https://your-mcp-host`
+
+### 4. 配置示例
+
+#### 单个 stdio Server
+
+```env
+MCP_SERVERS=git|stdio|node|mcp-git-server.js,--stdio
+```
+
+说明：
+- `git` 是服务名
+- `node` 是启动命令
+- `mcp-git-server.js,--stdio` 是参数（逗号分隔）
+
+#### 单个 HTTP Server
+
+```env
+MCP_SERVERS=docs|http|https://mcp.example.com
+```
+
+#### 多 Server 同时配置
+
+```env
+MCP_SERVERS=git|stdio|node|mcp-git-server.js,--stdio;docs|http|https://mcp.example.com
+```
+
+### 5. 启动后怎么确认成功
+
+- 启动 CLI 后看控制台是否有 `[MCP] 已加载` 提示
+- 在 CLI 输入：
+
+```text
+/mcp status
+```
+
+如果有服务名列表，说明已加载成功。
+
+### 6. 安全与审批说明
+
+- 所有 `mcp__` 工具默认进入 HITL 审批（人工确认）
+- 审批开关：
+  - `/hitl on`
+  - `/hitl off`
+  - `/hitl status`
+- 审计日志会记录在工作区：`.dongran_audit.jsonl`
+
+### 7. 常见问题排查
+
+- 看不到 MCP 工具：
+  - 检查 `MCP_SERVERS` 格式是否有多余空格或少了 `|`
+  - 确认 stdio 命令在本机可直接运行
+  - HTTP 地址是否可访问（含 `/sse`、`/rpc`）
+- 启动就失败：
+  - 先单独在终端运行该 MCP Server，确认它本身正常
 
 ## 配置优先级
 
