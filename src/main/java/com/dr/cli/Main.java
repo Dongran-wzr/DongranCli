@@ -25,29 +25,13 @@ public class Main {
             "/help", "/version", "/config", "/history", "/plan", "/team", "/mcp", "/hitl", "/clear", "/exit"
     );
     private static final String BANNER = """
-            DDDDDDDDDDDDD                                                                                                                            CCCCCCCCCCCCCLLLLLLLLLLL             IIIIIIIIII
-            D::::::::::::DDD                                                                                                                      CCC::::::::::::CL:::::::::L             I::::::::I
-            D:::::::::::::::DD                                                                                                                  CC:::::::::::::::CL:::::::::L             I::::::::I
-            DDD:::::DDDDD:::::D                                                                                                                C:::::CCCCCCCC::::CLL:::::::LL             II::::::II
-              D:::::D    D:::::D    ooooooooooo   nnnn  nnnnnnnn       ggggggggg   gggggrrrrr   rrrrrrrrr   aaaaaaaaaaaaa  nnnn  nnnnnnnn     C:::::C       CCCCCC  L:::::L                 I::::I
-              D:::::D     D:::::D oo:::::::::::oo n:::nn::::::::nn    g:::::::::ggg::::gr::::rrr:::::::::r  a::::::::::::a n:::nn::::::::nn  C:::::C                L:::::L                 I::::I
-              D:::::D     D:::::Do:::::::::::::::on::::::::::::::nn  g:::::::::::::::::gr:::::::::::::::::r aaaaaaaaa:::::an::::::::::::::nn C:::::C                L:::::L                 I::::I
-              D:::::D     D:::::Do:::::ooooo:::::onn:::::::::::::::ng::::::ggggg::::::ggrr::::::rrrrr::::::r         a::::ann:::::::::::::::nC:::::C                L:::::L                 I::::I
-              D:::::D     D:::::Do::::o     o::::o  n:::::nnnn:::::ng:::::g     g:::::g  r:::::r     r:::::r  aaaaaaa:::::a  n:::::nnnn:::::nC:::::C                L:::::L                 I::::I
-              D:::::D     D:::::Do::::o     o::::o  n::::n    n::::ng:::::g     g:::::g  r:::::r     rrrrrrraa::::::::::::a  n::::n    n::::nC:::::C                L:::::L                 I::::I
-              D:::::D     D:::::Do::::o     o::::o  n::::n    n::::ng:::::g     g:::::g  r:::::r           a::::aaaa::::::a  n::::n    n::::nC:::::C                L:::::L                 I::::I
-              D:::::D    D:::::D o::::o     o::::o  n::::n    n::::ng::::::g    g:::::g  r:::::r          a::::a    a:::::a  n::::n    n::::n C:::::C       CCCCCC  L:::::L         LLLLLL  I::::I
-            DDD:::::DDDDD:::::D  o:::::ooooo:::::o  n::::n    n::::ng:::::::ggggg:::::g  r:::::r          a::::a    a:::::a  n::::n    n::::n  C:::::CCCCCCCC::::CLL:::::::LLLLLLLLL:::::LII::::::II
-            D:::::::::::::::DD   o:::::::::::::::o  n::::n    n::::n g::::::::::::::::g  r:::::r          a:::::aaaa::::::a  n::::n    n::::n   CC:::::::::::::::CL::::::::::::::::::::::LI::::::::I
-            D::::::::::::DDD      oo:::::::::::oo   n::::n    n::::n  gg::::::::::::::g  r:::::r           a::::::::::aa:::a n::::n    n::::n     CCC::::::::::::CL::::::::::::::::::::::LI::::::::I
-            DDDDDDDDDDDDD           ooooooooooo     nnnnnn    nnnnnn    gggggggg::::::g  rrrrrrr            aaaaaaaaaa  aaaa nnnnnn    nnnnnn        CCCCCCCCCCCCCLLLLLLLLLLLLLLLLLLLLLLLLIIIIIIIIII
-                                                                                g:::::g
-                                                                    gggggg      g:::::g
-                                                                    g:::::gg   gg:::::g
-                                                                     g::::::ggg:::::::g
-                                                                      gg:::::::::::::g
-                                                                        ggg::::::ggg
-                                                                           gggggg
+             ____                        _
+            |  _ \\  ___  _ __   __ _ _ __| |_ ___
+            | | | |/ _ \\| '_ \\ / _` | '__| __/ __|
+            | |_| | (_) | | | | (_| | |  | |_\\__ \\
+            |____/ \\___/|_| |_|\\__, |_|   \\__|___/
+                               |___/
+                     Dongran CLI
             """;
 
     public static void main(String[] args) {
@@ -65,7 +49,7 @@ public class Main {
 
         ApprovalAwareToolRegistry toolRegistry = ApprovalAwareToolRegistry.createDefault(workspace);
         McpServerManager mcpServerManager = new McpServerManager(workspace);
-        List<McpServerConfig> mcpConfigs = McpServerManager.parseFromEnv();
+        List<McpServerConfig> mcpConfigs = McpServerManager.parseFromEnv(workspace);
         if (!mcpConfigs.isEmpty()) {
             mcpServerManager.startAll(mcpConfigs, toolRegistry);
             System.out.println("[MCP] 已加载: " + mcpServerManager.status());

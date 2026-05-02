@@ -4,6 +4,8 @@ import com.dr.audit.AuditLog;
 import com.dr.tool.ToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -70,8 +72,12 @@ public class McpServerManager implements AutoCloseable {
         }
     }
 
-    public static List<McpServerConfig> parseFromEnv() {
-        String raw = System.getenv("MCP_SERVERS");
+    public static List<McpServerConfig> parseFromEnv(Path workspaceRoot) {
+        String raw = firstNonBlank(
+                System.getenv("MCP_SERVERS"),
+                System.getProperty("MCP_SERVERS"),
+                readDotEnv(workspaceRoot, "MCP_SERVERS")
+        );
         if (raw == null || raw.isBlank()) {
             return List.of();
         }
@@ -101,6 +107,41 @@ public class McpServerManager implements AutoCloseable {
             }
         }
         return out;
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v.trim();
+            }
+        }
+        return "";
+    }
+
+    private static String readDotEnv(Path workspaceRoot, String key) {
+        if (workspaceRoot == null) {
+            return "";
+        }
+        Path envPath = workspaceRoot.resolve(".env").toAbsolutePath().normalize();
+        if (!Files.exists(envPath)) {
+            return "";
+        }
+        try {
+            for (String line : Files.readAllLines(envPath)) {
+                String s = line.trim();
+                if (s.isEmpty() || s.startsWith("#") || !s.contains("=")) {
+                    continue;
+                }
+                int idx = s.indexOf('=');
+                String k = s.substring(0, idx).trim();
+                String v = s.substring(idx + 1).trim();
+                if (key.equals(k) && !v.isBlank()) {
+                    return v;
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        return "";
     }
 
     private String namespace(String server, String tool) {
