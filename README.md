@@ -16,6 +16,16 @@
 - MCP 多服务接入
 - 人工审批与审计日志
 
+## 演示 GIF
+
+### 终端交互演示 1
+
+![DongranCLI 演示 1](docs/images/1.gif)
+
+### 终端交互演示 2
+
+![DongranCLI 演示 2](docs/images/2.gif)
+
 ## 目录结构
 
 ```text
