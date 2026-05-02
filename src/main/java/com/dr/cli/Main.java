@@ -50,7 +50,7 @@ public class Main {
         }
 
         ToolRegistry toolRegistry = new ToolRegistry(workspace);
-        Agent agent = new Agent(config.apiKey(), config.model(), config.apiUrl(), toolRegistry);
+        Agent agent = new Agent(config.apiKey(), config.model(), config.apiUrl(), toolRegistry, workspace);
         SessionStore sessionStore = new SessionStore(workspace);
 
         List<Message> existing = sessionStore.load();
@@ -94,7 +94,26 @@ public class Main {
     }
 
     private static boolean isLocalCommand(String input, Agent agent, SessionStore sessionStore, CliConfig config) {
-        switch (input.toLowerCase()) {
+        String normalized = input.toLowerCase();
+        if (normalized.startsWith("/team")) {
+            String[] parts = input.trim().split("\\s+");
+            if (parts.length == 1 || "status".equalsIgnoreCase(parts[1])) {
+                System.out.println("Team 模式: " + (agent.isTeamModeEnabled() ? "ON" : "OFF"));
+            } else if ("on".equalsIgnoreCase(parts[1])) {
+                agent.setTeamModeEnabled(true);
+                System.out.println("Team 模式已开启（Planner/Worker/Reviewer）");
+            } else if ("off".equalsIgnoreCase(parts[1])) {
+                agent.setTeamModeEnabled(false);
+                System.out.println("Team 模式已关闭");
+            } else if ("log".equalsIgnoreCase(parts[1])) {
+                System.out.println(agent.latestTeamSummary());
+            } else {
+                System.out.println("用法: /team [on|off|status|log]");
+            }
+            return true;
+        }
+
+        switch (normalized) {
             case "/help" -> {
                 printHelp();
                 return true;
@@ -146,6 +165,7 @@ public class Main {
                   /config   显示当前配置
                   /history  显示当前会话消息数量
                   /plan     显示最近一次 DAG 执行计划与状态
+                  /team     多 Agent 模式开关: /team on|off|status|log
                   /clear    清空会话
                   /exit     退出
                 """);

@@ -18,7 +18,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class ToolRegistry {
     private static final Logger LOG = LoggerFactory.getLogger(ToolRegistry.class);
@@ -35,6 +39,7 @@ public class ToolRegistry {
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, RegisteredTool> tools = new HashMap<>();
     private final Path workspaceRoot;
+    private final ExecutorService processExecutor = Executors.newCachedThreadPool();
 
     public ToolRegistry(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot.toAbsolutePath().normalize();
@@ -159,26 +164,45 @@ public class ToolRegistry {
                     if (!isAllowedCommand(command)) {
                         return error("command_rejected", "命令不在允许列表中");
                     }
-
-                    Process process = new ProcessBuilder("powershell", "-NoProfile", "-Command", command)
-                            .directory(workspaceRoot.toFile())
-                            .start();
-
-                    boolean done = process.waitFor(COMMAND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
-                    if (!done) {
-                        process.destroyForcibly();
-                        return error("command_timeout", "命令执行超时");
-                    }
-
-                    String stdout = readProcessStream(process.getInputStream());
-                    String stderr = readProcessStream(process.getErrorStream());
-                    return ok(Map.of(
-                            "exitCode", process.exitValue(),
-                            "stdout", stdout,
-                            "stderr", stderr
-                    ));
+                    return runCommandWithTimeout(command);
                 }
         ));
+    }
+
+    private String runCommandWithTimeout(String command) {
+        Future<CommandResult> future = processExecutor.submit(() -> {
+            Process process = new ProcessBuilder("powershell", "-NoProfile", "-Command", command)
+                    .directory(workspaceRoot.toFile())
+                    .start();
+
+            Future<String> stdoutFuture = processExecutor.submit(() -> readProcessStream(process.getInputStream()));
+            Future<String> stderrFuture = processExecutor.submit(() -> readProcessStream(process.getErrorStream()));
+
+            boolean done = process.waitFor(COMMAND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            if (!done) {
+                process.destroyForcibly();
+                throw new TimeoutException("命令执行超时");
+            }
+
+            String stdout = stdoutFuture.get(3, TimeUnit.SECONDS);
+            String stderr = stderrFuture.get(3, TimeUnit.SECONDS);
+            return new CommandResult(process.exitValue(), stdout, stderr);
+        });
+
+        try {
+            CommandResult result = future.get(COMMAND_TIMEOUT.toSeconds() + 5, TimeUnit.SECONDS);
+            return ok(Map.of(
+                    "exitCode", result.exitCode(),
+                    "stdout", result.stdout(),
+                    "stderr", result.stderr()
+            ));
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            return error("command_timeout", "命令执行超时");
+        } catch (Exception e) {
+            future.cancel(true);
+            return error("command_execution_failed", e.getMessage());
+        }
     }
 
     private void loadExternalProviders() {
@@ -274,5 +298,8 @@ public class ToolRegistry {
         } catch (Exception e) {
             return "{\"ok\":false,\"code\":\"unknown\",\"message\":\"serialization_failed\"}";
         }
+    }
+
+    private record CommandResult(int exitCode, String stdout, String stderr) {
     }
 }

@@ -6,8 +6,12 @@
 
 - 交互式会话：持续多轮对话
 - Plan-and-Execute：先由 Planner 生成 DAG 任务计划，再按依赖执行
+- Multi-Agent Team：支持 Planner / Worker / Reviewer 主从协作（`/team on` 开启）
 - 并发调度：同层可执行任务并发运行
 - 失败恢复：任务级重试与失败隔离（下游自动跳过）
+- 记忆系统：短期记忆窗口 + 长期记忆持久化检索
+- 上下文压缩：长会话自动摘要旧上下文
+- Token 预算：按预算动态裁剪上下文，预留推理空间
 - 工具调用：`read_file` / `write_file` / `list_dir` / `run_command`
 - 安全边界：
   - 文件工具限制在工作区目录
@@ -38,6 +42,7 @@ java -jar target/DongranCli-1.0-SNAPSHOT.jar
 - `/config`：显示当前配置（敏感信息脱敏）
 - `/history`：显示会话消息数量
 - `/plan`：显示最近一次 DAG 计划执行状态
+- `/team`：多 Agent 模式控制（`/team on|off|status|log`）
 - `/clear`：清空会话历史
 - `/exit`：退出
 
