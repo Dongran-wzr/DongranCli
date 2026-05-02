@@ -1,5 +1,7 @@
 package com.dr.tool;
 
+import com.dr.llm.DSV4Client;
+import com.dr.rag.SearchCodeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -40,9 +42,11 @@ public class ToolRegistry {
     private final Map<String, RegisteredTool> tools = new HashMap<>();
     private final Path workspaceRoot;
     private final ExecutorService processExecutor = Executors.newCachedThreadPool();
+    private final SearchCodeService searchCodeService;
 
     public ToolRegistry(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot.toAbsolutePath().normalize();
+        this.searchCodeService = new SearchCodeService(this.workspaceRoot, createInternalLlmClient());
         registerBuiltInTools();
         loadExternalProviders();
     }
@@ -88,6 +92,7 @@ public class ToolRegistry {
         registerWriteFile();
         registerListDir();
         registerRunCommand();
+        registerSearchCode();
     }
 
     private void registerReadFile() {
@@ -169,6 +174,34 @@ public class ToolRegistry {
         ));
     }
 
+    private void registerSearchCode() {
+        registerTool(new RegisteredTool(
+                new ToolDefinition(
+                        "search_code",
+                        "在代码库中进行语义+关键词混合检索，返回相关代码片段与调用链",
+                        createParameters(
+                                new Param("query", "string", "自然语言查询，如“找 UserService 调用链”", true),
+                                new Param("top_k", "string", "返回结果数，默认 8", false)
+                        )
+                ),
+                args -> {
+                    String query = args.getOrDefault("query", "").trim();
+                    if (query.isBlank()) {
+                        return error("invalid_query", "query 不能为空");
+                    }
+                    int topK = 8;
+                    String topKRaw = args.get("top_k");
+                    if (topKRaw != null && !topKRaw.isBlank()) {
+                        try {
+                            topK = Math.max(1, Math.min(20, Integer.parseInt(topKRaw)));
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    return searchCodeService.search(query, topK);
+                }
+        ));
+    }
+
     private String runCommandWithTimeout(String command) {
         Future<CommandResult> future = processExecutor.submit(() -> {
             Process process = new ProcessBuilder("powershell", "-NoProfile", "-Command", command)
@@ -203,6 +236,32 @@ public class ToolRegistry {
             future.cancel(true);
             return error("command_execution_failed", e.getMessage());
         }
+    }
+
+    private DSV4Client createInternalLlmClient() {
+        String apiKey = firstNonBlank(
+                System.getenv("DEEPSEEK_API_KEY"),
+                System.getenv("GLM_API_KEY"),
+                ""
+        );
+        String model = firstNonBlank(
+                System.getenv("DONGRAN_MODEL"),
+                "deepseek-chat"
+        );
+        String base = firstNonBlank(
+                System.getenv("DONGRAN_API_URL"),
+                ""
+        );
+        return new DSV4Client(apiKey, model, base);
+    }
+
+    private String firstNonBlank(String... vals) {
+        for (String v : vals) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return "";
     }
 
     private void loadExternalProviders() {

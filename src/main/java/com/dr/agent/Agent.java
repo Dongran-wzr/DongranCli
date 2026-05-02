@@ -66,6 +66,8 @@ public class Agent {
     2. 如果需要读取/写入文件或执行命令，优先使用工具调用。
     3. 工具返回后要继续推理，直到能给出最终可执行建议。
     4. 结果必须尽量可复制、可验证。
+    5. 涉及代码定位、类关系、调用链时，优先调用 search_code 进行检索再回答。
+    6. ReAct 与 Plan-and-Execute 模式都应主动利用 search_code 完成代码库理解。
     """;
 
     public String run(String userInput) {
@@ -181,6 +183,10 @@ public class Agent {
                     .append("\n");
         }
         return sb.toString();
+    }
+
+    public ToolRegistry getToolRegistry() {
+        return toolRegistry;
     }
 
     private void trimHistory() {

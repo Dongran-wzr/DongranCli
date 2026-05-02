@@ -2,6 +2,7 @@ package com.dr.cli;
 
 import com.dr.agent.Agent;
 import com.dr.agent.Message;
+import com.dr.tool.ApprovalAwareToolRegistry;
 import com.dr.tool.ToolRegistry;
 
 import java.nio.file.Path;
@@ -49,7 +50,7 @@ public class Main {
             return;
         }
 
-        ToolRegistry toolRegistry = new ToolRegistry(workspace);
+        ApprovalAwareToolRegistry toolRegistry = ApprovalAwareToolRegistry.createDefault(workspace);
         Agent agent = new Agent(config.apiKey(), config.model(), config.apiUrl(), toolRegistry, workspace);
         SessionStore sessionStore = new SessionStore(workspace);
 
@@ -95,6 +96,29 @@ public class Main {
 
     private static boolean isLocalCommand(String input, Agent agent, SessionStore sessionStore, CliConfig config) {
         String normalized = input.toLowerCase();
+        if (normalized.startsWith("/hitl")) {
+            String[] parts = input.trim().split("\\s+");
+            ToolRegistry raw = agent.getToolRegistry();
+            if (!(raw instanceof ApprovalAwareToolRegistry ar)) {
+                System.out.println("当前 Registry 不支持 HITL");
+                return true;
+            }
+            if (parts.length == 1 || "status".equalsIgnoreCase(parts[1])) {
+                System.out.println("HITL: " + (ar.isHitlEnabled() ? "ON" : "OFF"));
+            } else if ("on".equalsIgnoreCase(parts[1])) {
+                ar.setHitlEnabled(true);
+                System.out.println("HITL 已开启");
+            } else if ("off".equalsIgnoreCase(parts[1])) {
+                ar.setHitlEnabled(false);
+                System.out.println("HITL 已关闭");
+            } else if ("reset".equalsIgnoreCase(parts[1])) {
+                ar.resetSessionApprovals();
+                System.out.println("HITL 会话缓存已清空");
+            } else {
+                System.out.println("用法: /hitl [on|off|status|reset]");
+            }
+            return true;
+        }
         if (normalized.startsWith("/team")) {
             String[] parts = input.trim().split("\\s+");
             if (parts.length == 1 || "status".equalsIgnoreCase(parts[1])) {
@@ -166,6 +190,7 @@ public class Main {
                   /history  显示当前会话消息数量
                   /plan     显示最近一次 DAG 执行计划与状态
                   /team     多 Agent 模式开关: /team on|off|status|log
+                  /hitl     人工审批开关: /hitl on|off|status|reset
                   /clear    清空会话
                   /exit     退出
                 """);
