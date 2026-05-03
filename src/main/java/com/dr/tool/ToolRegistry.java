@@ -16,6 +16,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.InvalidPathException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -28,17 +29,38 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.Locale;
 
 public class ToolRegistry {
     private static final Logger LOG = LoggerFactory.getLogger(ToolRegistry.class);
     private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(20);
-    private static final List<String> COMMAND_ALLOWLIST = List.of(
+    private static final List<String> STRICT_COMMAND_ALLOWLIST = List.of(
             "dir",
             "type",
             "findstr",
             "git status",
             "git diff",
-            "java -version"
+            "java -version",
+            "npx -y chrome-devtools-mcp@latest",
+            "npx chrome-devtools-mcp@latest"
+    );
+    private static final List<String> BALANCED_COMMAND_ALLOWLIST = List.of(
+            "dir",
+            "type",
+            "findstr",
+            "git ",
+            "java -version",
+            "mvn ",
+            "mvnw ",
+            ".\\mvnw ",
+            "npm ",
+            "pnpm ",
+            "yarn ",
+            "node ",
+            "npx ",
+            "powershell -NoProfile -Command git ",
+            "powershell -NoProfile -Command mvn ",
+            "powershell -NoProfile -Command npm "
     );
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -48,9 +70,17 @@ public class ToolRegistry {
     private final SearchCodeService searchCodeService;
     private final WebSearchService webSearchService;
     private final WebFetchService webFetchService;
+    private volatile SecurityMode securityMode;
 
     public ToolRegistry(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot.toAbsolutePath().normalize();
+        this.securityMode = resolveSecurityMode(
+                System.getProperty("DONGRAN_SECURITY_MODE"),
+                System.getenv("DONGRAN_SECURITY_MODE"),
+                System.getenv("SECURITY_MODE"),
+                "balanced"
+        );
+        System.setProperty("DONGRAN_SECURITY_MODE", securityMode.value);
         this.searchCodeService = new SearchCodeService(this.workspaceRoot, createInternalLlmClient());
         this.webSearchService = new WebSearchService(this.workspaceRoot);
         this.webFetchService = new WebFetchService();
@@ -76,6 +106,18 @@ public class ToolRegistry {
         return tools.values().stream().map(RegisteredTool::definition).toList();
     }
 
+    public SecurityMode getSecurityMode() {
+        return securityMode;
+    }
+
+    public void setSecurityMode(SecurityMode mode) {
+        if (mode == null) {
+            return;
+        }
+        this.securityMode = mode;
+        System.setProperty("DONGRAN_SECURITY_MODE", mode.value);
+    }
+
     public String executeTool(String toolName, String argumentsJson) {
         RegisteredTool tool = tools.get(toolName);
         if (tool == null) {
@@ -84,6 +126,10 @@ public class ToolRegistry {
         try {
             Map<String, String> args = parseArgs(argumentsJson);
             return tool.executor().execute(args);
+        } catch (IllegalArgumentException e) {
+            // 参数校验失败属于可预期拒绝，不打印大段堆栈，避免污染终端日志。
+            LOG.info("工具参数被拒绝: {} - {}", toolName, e.getMessage());
+            return error("invalid_arguments", e.getMessage());
         } catch (Exception e) {
             LOG.warn("工具执行失败: {}", toolName, e);
             return error("tool_execution_failed", e.getMessage());
@@ -108,11 +154,11 @@ public class ToolRegistry {
         registerTool(new RegisteredTool(
                 new ToolDefinition(
                         "read_file",
-                        "读取工作区内文件内容",
-                        createParameters(new Param("path", "string", "工作区内文件路径", true))
+                        "读取文件内容，允许访问工作区外路径",
+                        createParameters(new Param("path", "string", "文件路径", true))
                 ),
                 args -> {
-                    Path resolved = safeResolve(args.get("path"));
+                    Path resolved = resolveReadablePath(args.get("path"));
                     String content = Files.readString(resolved, StandardCharsets.UTF_8);
                     return ok(Map.of(
                             "path", resolved.toString(),
@@ -126,15 +172,18 @@ public class ToolRegistry {
         registerTool(new RegisteredTool(
                 new ToolDefinition(
                         "write_file",
-                        "写入工作区内文件内容",
+                        "写入文件内容，允许访问工作区外路径",
                         createParameters(
-                                new Param("path", "string", "工作区内文件路径", true),
+                                new Param("path", "string", "文件路径", true),
                                 new Param("content", "string", "写入内容", true)
                         )
                 ),
                 args -> {
-                    Path resolved = safeResolve(args.get("path"));
-                    Files.createDirectories(resolved.getParent());
+                    Path resolved = resolveReadablePath(args.get("path"));
+                    Path parent = resolved.getParent();
+                    if (parent != null) {
+                        Files.createDirectories(parent);
+                    }
                     Files.writeString(resolved, args.getOrDefault("content", ""), StandardCharsets.UTF_8);
                     return ok(Map.of("path", resolved.toString(), "bytes", Files.size(resolved)));
                 }
@@ -145,12 +194,12 @@ public class ToolRegistry {
         registerTool(new RegisteredTool(
                 new ToolDefinition(
                         "list_dir",
-                        "列出工作区目录内容",
-                        createParameters(new Param("path", "string", "工作区目录路径，默认 .", false))
+                        "列出目录内容，允许访问工作区外路径",
+                        createParameters(new Param("path", "string", "目录路径，默认 .", false))
                 ),
                 args -> {
                     String pathArg = args.getOrDefault("path", ".");
-                    Path resolved = safeResolve(pathArg);
+                    Path resolved = resolveReadablePath(pathArg);
                     if (!Files.isDirectory(resolved)) {
                         return error("not_directory", "目标不是目录: " + resolved);
                     }
@@ -175,6 +224,13 @@ public class ToolRegistry {
                 ),
                 args -> {
                     String command = args.getOrDefault("command", "").trim();
+                    String normalized = normalizeCommand(command);
+                    if (isPureCdCommand(normalized)) {
+                        return ok(Map.of(
+                                "note", "run_command 已在工作区目录执行，无需额外 cd/cd 盘符切换",
+                                "cwd", workspaceRoot.toString()
+                        ));
+                    }
                     if (!isAllowedCommand(command)) {
                         return error("command_rejected", "命令不在允许列表中");
                     }
@@ -330,19 +386,79 @@ public class ToolRegistry {
         }
     }
 
-    private Path safeResolve(String path) {
+    private Path resolveReadablePath(String path) {
         if (path == null || path.isBlank()) {
             throw new IllegalArgumentException("path 不能为空");
         }
-        Path resolved = workspaceRoot.resolve(path).normalize();
-        if (!resolved.startsWith(workspaceRoot)) {
-            throw new IllegalArgumentException("禁止访问工作区外路径");
+        String normalizedInput = normalizePathInput(path);
+        if (normalizedInput.equals(".") || normalizedInput.equals("./") || normalizedInput.equals(".\\")
+                || normalizedInput.equals("/") || normalizedInput.equals("\\")) {
+            return workspaceRoot;
         }
-        return resolved;
+        try {
+            Path inputPath = Path.of(normalizedInput);
+            return (inputPath.isAbsolute() ? inputPath : workspaceRoot.resolve(inputPath)).normalize();
+        } catch (InvalidPathException e) {
+            throw new IllegalArgumentException("path 非法: " + path);
+        }
+    }
+
+    private String normalizePathInput(String raw) {
+        String p = raw == null ? "" : raw.trim();
+        if ((p.startsWith("\"") && p.endsWith("\"")) || (p.startsWith("'") && p.endsWith("'"))) {
+            p = p.substring(1, p.length() - 1).trim();
+        }
+        return p;
     }
 
     private boolean isAllowedCommand(String command) {
-        return COMMAND_ALLOWLIST.stream().anyMatch(command::startsWith);
+        String normalized = normalizeCommand(command);
+        return switch (securityMode) {
+            case STRICT -> STRICT_COMMAND_ALLOWLIST.stream()
+                    .map(this::normalizeCommand)
+                    .anyMatch(normalized::startsWith);
+            case BALANCED -> BALANCED_COMMAND_ALLOWLIST.stream()
+                    .map(this::normalizeCommand)
+                    .anyMatch(normalized::startsWith);
+            case PERMISSIVE -> !looksDangerous(normalized);
+        };
+    }
+
+    private String normalizeCommand(String command) {
+        if (command == null) {
+            return "";
+        }
+        String normalized = command.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        if ((normalized.startsWith("\"") && normalized.endsWith("\""))
+                || (normalized.startsWith("'") && normalized.endsWith("'"))) {
+            return normalized.substring(1, normalized.length() - 1).trim();
+        }
+        return normalized;
+    }
+
+    private boolean looksDangerous(String normalized) {
+        if (normalized == null || normalized.isBlank()) {
+            return true;
+        }
+        List<String> denyTokens = List.of(
+                "rm -rf /",
+                "remove-item -recurse -force",
+                "del /f /s /q",
+                "format ",
+                "diskpart",
+                "shutdown ",
+                "reboot ",
+                "mkfs",
+                "rd /s /q c:\\",
+                "reg delete hklm"
+        );
+        return denyTokens.stream().anyMatch(normalized::contains);
+    }
+
+    private boolean isPureCdCommand(String normalized) {
+        // 仅兼容纯 cd 指令，避免吞掉 "cd ...; npx ..." 这类复合命令。
+        return normalized.matches("^cd(\\s+[a-z]:)?$")
+                || normalized.matches("^cd(\\s+[^;&|]+)?$");
     }
 
     private String readProcessStream(java.io.InputStream stream) throws Exception {
@@ -411,5 +527,40 @@ public class ToolRegistry {
     }
 
     private record CommandResult(int exitCode, String stdout, String stderr) {
+    }
+
+    public enum SecurityMode {
+        STRICT("strict"),
+        BALANCED("balanced"),
+        PERMISSIVE("permissive");
+
+        private final String value;
+
+        SecurityMode(String value) {
+            this.value = value;
+        }
+
+        public static SecurityMode from(String raw, SecurityMode defaultMode) {
+            if (raw == null || raw.isBlank()) {
+                return defaultMode;
+            }
+            String v = raw.trim().toLowerCase(Locale.ROOT);
+            for (SecurityMode mode : values()) {
+                if (mode.value.equals(v)) {
+                    return mode;
+                }
+            }
+            return defaultMode;
+        }
+    }
+
+    private SecurityMode resolveSecurityMode(String... values) {
+        for (String value : values) {
+            SecurityMode parsed = SecurityMode.from(value, null);
+            if (parsed != null) {
+                return parsed;
+            }
+        }
+        return SecurityMode.BALANCED;
     }
 }

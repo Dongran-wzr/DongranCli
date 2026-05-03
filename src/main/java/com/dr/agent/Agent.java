@@ -21,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.nio.file.Path;
+import java.util.function.Consumer;
 
 public class Agent {
     private static final Logger LOG = LoggerFactory.getLogger(Agent.class);
@@ -28,6 +29,7 @@ public class Agent {
 
     private final DSV4Client llmClient;
     private final ToolRegistry toolRegistry;
+    private final String configModel;
     private final Planner planner;
     private final PlanExecutor executor;
     private final MultiAgentCoordinator multiAgentCoordinator;
@@ -41,10 +43,13 @@ public class Agent {
     private PlanExecutionReport lastPlanReport;
     private List<AgentMessage> lastTeamMessages;
     private boolean teamModeEnabled;
+    private String lastTokenUsageLine;
+    private long lastRunDurationMillis;
 
     public Agent(String apiKey, String model, String baseUrl, ToolRegistry toolRegistry, Path workspaceRoot) {
         this.llmClient = new DSV4Client(apiKey, model, baseUrl);
         this.toolRegistry = toolRegistry;
+        this.configModel = model;
         this.planner = new Planner(llmClient);
         this.executor = new PlanExecutor(llmClient, toolRegistry);
         this.multiAgentCoordinator = new MultiAgentCoordinator(llmClient, toolRegistry);
@@ -59,6 +64,8 @@ public class Agent {
         this.lastPlanReport = null;
         this.lastTeamMessages = List.of();
         this.teamModeEnabled = false;
+        this.lastTokenUsageLine = "";
+        this.lastRunDurationMillis = 0L;
     }
 
     private static final String SYSTEM_PROMPT = """
@@ -75,18 +82,32 @@ public class Agent {
     """;
 
     public String run(String userInput) {
+        return run(userInput, null, null);
+    }
+
+    public String run(String userInput, Consumer<String> progressCallback) {
+        return run(userInput, progressCallback, null);
+    }
+
+    public String run(String userInput, Consumer<String> progressCallback, Consumer<String> answerChunkCallback) {
+        long startedAt = System.currentTimeMillis();
+        Consumer<String> progress = progressCallback == null ? s -> { } : progressCallback;
+        progress.accept("🧠 思考过程: 开始分析用户意图");
         conversationHistory.add(Message.user(userInput));
         trimHistory();
 
+        progress.accept("🧠 思考过程: 检索长期记忆与短期上下文");
         List<MemoryEntry> allMemories = longTermMemoryStore.load();
         List<MemoryEntry> retrieved = memoryRetriever.retrieveTopK(allMemories, userInput, 4);
         longTermMemoryStore.save(allMemories); // 持久化命中次数
 
         String compressedContext = "";
         if (conversationHistory.size() > 18) {
+            progress.accept("🧠 思考过程: 压缩历史上下文");
             int end = Math.max(2, conversationHistory.size() - 10);
             compressedContext = contextCompressor.compress(conversationHistory.subList(1, end));
         }
+        progress.accept("🧠 思考过程: 计算 Token 预算并构建可控上下文");
         List<Message> managedContext = tokenBudgetManager.buildManagedContext(
                 conversationHistory,
                 retrieved,
@@ -97,28 +118,46 @@ public class Agent {
         try {
             PlanExecutionReport report;
             if (teamModeEnabled) {
+                progress.accept("👥 协作模式: 启用 Multi-Agent（Planner/Worker/Reviewer）");
                 TeamExecutionResult team = multiAgentCoordinator.execute(userInput, new ArrayList<>(managedContext));
                 report = team.report();
                 lastTeamMessages = team.messages();
             } else {
+                progress.accept("🗺️ 规划阶段: 生成执行计划");
                 ExecutionPlan plan = planner.createPlan(userInput, managedContext);
-                report = executor.execute(plan, new ArrayList<>(managedContext));
+                progress.accept("⚙️ 执行阶段: 开始执行计划任务");
+                report = executor.execute(plan, new ArrayList<>(managedContext), progress, answerChunkCallback);
                 lastTeamMessages = List.of();
             }
             this.lastPlanReport = report;
             String finalAnswer = report.finalAnswer();
+            lastRunDurationMillis = System.currentTimeMillis() - startedAt;
+            refreshTokenUsageLine();
+            if (answerChunkCallback != null && !teamModeEnabled) {
+                // PlanExecutor 已流式输出，此处不重复推送。
+            } else if (answerChunkCallback != null) {
+                answerChunkCallback.accept(finalAnswer);
+            }
             conversationHistory.add(Message.assistant(finalAnswer));
             shortTermMemory.addTurn(userInput, finalAnswer);
             longTermMemoryStore.appendMemory(userInput, finalAnswer);
             trimHistory();
+            progress.accept("✅ 完成: 已生成最终回答");
             return finalAnswer;
         } catch (Exception e) {
             LOG.warn("Plan-and-Execute 执行失败，降级直接对话", e);
-            String fallback = reActExecutor.execute(managedContext);
+            progress.accept("⚠️ 计划执行失败: 降级到 ReAct");
+            String fallback = reActExecutor.execute(managedContext, progress);
+            lastRunDurationMillis = System.currentTimeMillis() - startedAt;
+            refreshTokenUsageLine();
+            if (answerChunkCallback != null) {
+                answerChunkCallback.accept(fallback);
+            }
             conversationHistory.add(Message.assistant(fallback));
             shortTermMemory.addTurn(userInput, fallback);
             longTermMemoryStore.appendMemory(userInput, fallback);
             trimHistory();
+            progress.accept("✅ 完成: ReAct 生成最终回答");
             return fallback;
         }
     }
@@ -191,6 +230,33 @@ public class Agent {
 
     public ToolRegistry getToolRegistry() {
         return toolRegistry;
+    }
+
+    public String lastTokenUsageLine() {
+        return lastTokenUsageLine;
+    }
+
+    public String getConfigModel() {
+        return configModel;
+    }
+
+    public long lastRunDurationMillis() {
+        return lastRunDurationMillis;
+    }
+
+    private void refreshTokenUsageLine() {
+        DSV4Client.TokenUsage usage = llmClient.lastTokenUsage();
+        if (usage == null || !usage.available()) {
+            lastTokenUsageLine = "";
+            return;
+        }
+        String model = (configModel == null || configModel.isBlank()) ? "default" : configModel;
+        long seconds = Math.max(0L, lastRunDurationMillis / 1000L);
+        lastTokenUsageLine = "🔢 " + model
+                + "  tokens " + usage.totalTokens()
+                + "  prompt " + usage.promptTokens()
+                + "  completion " + usage.completionTokens()
+                + "  time " + seconds + "s";
     }
 
     private void trimHistory() {

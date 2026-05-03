@@ -16,11 +16,13 @@ import okhttp3.MediaType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class DSV4Client {
     private static final Logger LOG = LoggerFactory.getLogger(DSV4Client.class);
@@ -30,6 +32,7 @@ public class DSV4Client {
     private static final String DEFAULT_MODEL = "deepseek-chat";
     private static final String DEFAULT_EMBEDDING_MODEL = "nomic-embed-text";
     private static final int MAX_EMBED_TEXT_CHARS = 8000;
+    private static final TokenUsage EMPTY_USAGE = new TokenUsage(-1, -1, -1);
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final Provider provider;
@@ -40,6 +43,7 @@ public class DSV4Client {
     private final String model;
     private final String embeddingModel;
     private final OkHttpClient httpClient;
+    private final ThreadLocal<TokenUsage> lastUsage = ThreadLocal.withInitial(() -> EMPTY_USAGE);
 
     public DSV4Client(String apiKey, String model, String baseUrl) {
         this.apiKey = apiKey;
@@ -102,13 +106,107 @@ public class DSV4Client {
             JsonNode choice = root.path("choices").path(0);
             JsonNode message = choice.path("message");
             String content = message.path("content").asText("");
+            lastUsage.set(parseUsage(root, estimatePromptTokens(history), estimateCompletionTokens(content)));
 
             List<ToolCall> toolCalls = parseToolCalls(message.path("tool_calls"));
             return new ChatResponse(content, toolCalls);
         } catch (IOException e) {
             LOG.warn("LLM 调用异常", e);
+            lastUsage.set(EMPTY_USAGE);
             return new ChatResponse("LLM 请求异常: " + e.getMessage(), List.of());
         }
+    }
+
+    /**
+     * SSE 流式文本输出，仅用于不需要 tools 的最终回答场景。
+     */
+    public String chatStreamText(List<Message> history, Consumer<String> onToken) {
+        Consumer<String> tokenConsumer = onToken == null ? s -> { } : onToken;
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("model", model);
+        payload.put("temperature", 0.2);
+        payload.put("stream", true);
+        payload.set("messages", buildMessages(history));
+        payload.set("stream_options", mapper.createObjectNode().put("include_usage", true));
+
+        Request request = new Request.Builder()
+                .url(chatUrl)
+                .header("Authorization", "Bearer " + (apiKey == null ? "" : apiKey))
+                .header("Content-Type", "application/json")
+                .post(RequestBody.create(payload.toString(), JSON))
+                .build();
+
+        StringBuilder answer = new StringBuilder();
+        TokenUsage usage = EMPTY_USAGE;
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String body = response.body() == null ? "" : response.body().string();
+                lastUsage.set(EMPTY_USAGE);
+                return "LLM 请求失败: HTTP " + response.code() + " " + body;
+            }
+            if (response.body() == null) {
+                lastUsage.set(EMPTY_USAGE);
+                return "";
+            }
+
+            try (BufferedReader reader = new BufferedReader(response.body().charStream())) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (!trimmed.startsWith("data:")) {
+                        continue;
+                    }
+                    String data = trimmed.substring("data:".length()).trim();
+                    if (data.isBlank() || "[DONE]".equals(data)) {
+                        if ("[DONE]".equals(data)) {
+                            break;
+                        }
+                        continue;
+                    }
+                    try {
+                        JsonNode chunk = mapper.readTree(data);
+                        JsonNode usageNode = chunk.path("usage");
+                        if (!usageNode.isMissingNode() && !usageNode.isNull()) {
+                            usage = parseUsageFromNode(
+                                    usageNode,
+                                    estimatePromptTokens(history),
+                                    estimateCompletionTokens(answer.toString())
+                            );
+                        }
+                        JsonNode choice = chunk.path("choices").path(0);
+                        JsonNode delta = choice.path("delta");
+                        String token = delta.path("content").asText("");
+                        if (token.isBlank()) {
+                            // 兼容部分实现把文本放在 message.content
+                            token = choice.path("message").path("content").asText("");
+                        }
+                        if (!token.isBlank()) {
+                            answer.append(token);
+                            tokenConsumer.accept(token);
+                        }
+                    } catch (Exception parseEx) {
+                        LOG.debug("SSE chunk 解析失败: {}", data, parseEx);
+                    }
+                }
+            }
+            if (usage == EMPTY_USAGE) {
+                usage = new TokenUsage(
+                        estimatePromptTokens(history),
+                        estimateCompletionTokens(answer.toString()),
+                        estimatePromptTokens(history) + estimateCompletionTokens(answer.toString())
+                );
+            }
+            lastUsage.set(usage);
+            return answer.toString();
+        } catch (IOException e) {
+            LOG.warn("LLM SSE 调用异常", e);
+            lastUsage.set(EMPTY_USAGE);
+            return "LLM 请求异常: " + e.getMessage();
+        }
+    }
+
+    public TokenUsage lastTokenUsage() {
+        return lastUsage.get();
     }
 
     public List<Double> embedText(String text) {
@@ -293,6 +391,46 @@ public class DSV4Client {
             }
         }
         return calls;
+    }
+
+    private TokenUsage parseUsage(JsonNode root, int fallbackPrompt, int fallbackCompletion) {
+        return parseUsageFromNode(root.path("usage"), fallbackPrompt, fallbackCompletion);
+    }
+
+    private TokenUsage parseUsageFromNode(JsonNode usageNode, int fallbackPrompt, int fallbackCompletion) {
+        if (usageNode == null || usageNode.isMissingNode() || usageNode.isNull()) {
+            int total = fallbackPrompt + fallbackCompletion;
+            return new TokenUsage(fallbackPrompt, fallbackCompletion, total);
+        }
+        int prompt = usageNode.path("prompt_tokens").asInt(fallbackPrompt);
+        int completion = usageNode.path("completion_tokens").asInt(fallbackCompletion);
+        int total = usageNode.path("total_tokens").asInt(prompt + completion);
+        return new TokenUsage(prompt, completion, total);
+    }
+
+    private int estimatePromptTokens(List<Message> history) {
+        int chars = 0;
+        if (history != null) {
+            for (Message message : history) {
+                if (message != null && message.getContent() != null) {
+                    chars += message.getContent().length();
+                }
+            }
+        }
+        return Math.max(1, chars / 4);
+    }
+
+    private int estimateCompletionTokens(String text) {
+        if (text == null || text.isBlank()) {
+            return 1;
+        }
+        return Math.max(1, text.length() / 4);
+    }
+
+    public record TokenUsage(int promptTokens, int completionTokens, int totalTokens) {
+        public boolean available() {
+            return promptTokens >= 0 && completionTokens >= 0 && totalTokens >= 0;
+        }
     }
 
     private enum Provider {

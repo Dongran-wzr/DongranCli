@@ -18,10 +18,12 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Locale;
 
 public class ApprovalAwareToolRegistry extends ToolRegistry {
     private static final Object DISPLAY_LOCK = new Object();
     private static final ConcurrentHashMap<String, Boolean> SESSION_CACHE = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, Boolean> COMMAND_APPROVAL_CACHE = new ConcurrentHashMap<>();
     private static volatile boolean allowAllInSession = false;
 
     private final ApprovalPolicy approvalPolicy;
@@ -64,6 +66,10 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
         if (!decision.requiresApproval()) {
             return super.executeTool(toolName, argumentsJson);
         }
+        String normalizedCommand = extractNormalizedCommand(toolName, argumentsJson);
+        if (!normalizedCommand.isBlank() && Boolean.TRUE.equals(COMMAND_APPROVAL_CACHE.get(normalizedCommand))) {
+            return super.executeTool(toolName, argumentsJson);
+        }
         if (allowAllInSession) {
             return super.executeTool(toolName, argumentsJson);
         }
@@ -95,6 +101,9 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
                     return deny("approval_denied", "工具调用被人工审批拒绝: " + toolName);
                 }
                 SESSION_CACHE.put(fingerprint, true);
+                if (!normalizedCommand.isBlank()) {
+                    COMMAND_APPROVAL_CACHE.put(normalizedCommand, true);
+                }
                 auditLog.log("hitl", "approve", toolName);
                 return super.executeTool(toolName, argumentsJson);
             } catch (Exception e) {
@@ -114,17 +123,64 @@ public class ApprovalAwareToolRegistry extends ToolRegistry {
 
     public void resetSessionApprovals() {
         SESSION_CACHE.clear();
+        COMMAND_APPROVAL_CACHE.clear();
         allowAllInSession = false;
     }
 
     private String fingerprint(String toolName, String args) {
-        String base = (toolName == null ? "" : toolName) + "|" + (args == null ? "" : args);
+        String normalizedTool = toolName == null ? "" : toolName.trim().toLowerCase(Locale.ROOT);
+        String normalizedArgs = normalizeArgsForFingerprint(normalizedTool, args);
+        String base = normalizedTool + "|" + normalizedArgs;
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(md.digest(base.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
             return Integer.toHexString(base.hashCode());
         }
+    }
+
+    private String normalizeArgsForFingerprint(String toolName, String args) {
+        if ("run_command".equals(toolName)) {
+            String c = extractNormalizedCommand(toolName, args);
+            if (!c.isBlank()) {
+                return "{\"command\":\"" + c + "\"}";
+            }
+        }
+        if (args == null || args.isBlank()) {
+            return "";
+        }
+        try {
+            return mapper.writeValueAsString(mapper.readTree(args));
+        } catch (Exception ignore) {
+            return args.trim();
+        }
+    }
+
+    private String extractNormalizedCommand(String toolName, String args) {
+        if (!"run_command".equalsIgnoreCase(toolName == null ? "" : toolName.trim())) {
+            return "";
+        }
+        if (args == null || args.isBlank()) {
+            return "";
+        }
+        try {
+            String raw = mapper.readTree(args).path("command").asText("");
+            return normalizeCommand(raw);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private String normalizeCommand(String command) {
+        if (command == null) {
+            return "";
+        }
+        String normalized = command.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        if ((normalized.startsWith("\"") && normalized.endsWith("\""))
+                || (normalized.startsWith("'") && normalized.endsWith("'"))) {
+            return normalized.substring(1, normalized.length() - 1).trim();
+        }
+        return normalized;
     }
 
     private String deny(String code, String message) {

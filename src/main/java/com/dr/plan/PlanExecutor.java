@@ -21,6 +21,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.Consumer;
 
 public class PlanExecutor {
     private static final Logger LOG = LoggerFactory.getLogger(PlanExecutor.class);
@@ -39,6 +40,16 @@ public class PlanExecutor {
     }
 
     public PlanExecutionReport execute(ExecutionPlan plan, List<Message> sharedHistory) {
+        return execute(plan, sharedHistory, null, null);
+    }
+
+    public PlanExecutionReport execute(
+            ExecutionPlan plan,
+            List<Message> sharedHistory,
+            Consumer<String> progressCallback,
+            Consumer<String> answerChunkCallback
+    ) {
+        Consumer<String> progress = progressCallback == null ? s -> { } : progressCallback;
         Instant startedAt = Instant.now();
 
         while (!plan.allFinished()) {
@@ -47,13 +58,15 @@ public class PlanExecutor {
                 plan.markUnreachableAsSkipped();
                 break;
             }
+            progress.accept("🧩 任务调度: 本轮可执行任务 " + ready.size() + " 个");
 
             List<TaskRunResult> roundResults = executeReadyTasksInParallel(plan, ready, sharedHistory);
             writeRoundOutputOrdered(roundResults, sharedHistory);
             plan.markUnreachableAsSkipped();
         }
 
-        String finalAnswer = synthesizeFinalAnswer(plan, sharedHistory);
+        progress.accept("🧠 总结阶段: 正在生成最终回答");
+        String finalAnswer = synthesizeFinalAnswer(plan, sharedHistory, answerChunkCallback);
         return buildReport(plan, startedAt, Instant.now(), finalAnswer);
     }
 
@@ -158,11 +171,38 @@ public class PlanExecutor {
             }
             return new TaskAttemptResult(true, output, null);
         }
-
-        return new TaskAttemptResult(false, null, "工具调用迭代次数超过限制");
+        String forced = forceFinalizeAfterToolLimit(working, task.id(), task.description());
+        if (forced == null || forced.isBlank()) {
+            return new TaskAttemptResult(false, null, "工具调用迭代次数超过限制");
+        }
+        return new TaskAttemptResult(true, forced, null);
     }
 
-    private String synthesizeFinalAnswer(ExecutionPlan plan, List<Message> sharedHistory) {
+    private String forceFinalizeAfterToolLimit(List<Message> working, String taskId, String taskDescription) {
+        List<Message> forcedMessages = new ArrayList<>(working);
+        forcedMessages.add(Message.user("""
+                你已达到工具调用上限，请立即停止调用任何工具。
+                仅基于当前上下文直接给出任务结果：
+                - taskId: %s
+                - task: %s
+                若信息不足，请明确缺失项并给出下一步建议。
+                """.formatted(taskId, taskDescription)));
+        ChatResponse forced = llmClient.chat(forcedMessages, List.of());
+        if (forced == null) {
+            return "";
+        }
+        String content = forced.content();
+        if (content == null || content.isBlank()) {
+            return "工具调用已达上限，且模型未返回可用结论。请缩小问题范围或分步骤提问。";
+        }
+        return content;
+    }
+
+    private String synthesizeFinalAnswer(
+            ExecutionPlan plan,
+            List<Message> sharedHistory,
+            Consumer<String> answerChunkCallback
+    ) {
         StringBuilder summary = new StringBuilder();
         summary.append("目标: ").append(plan.objective()).append("\n");
         summary.append("任务执行结果:\n");
@@ -187,6 +227,9 @@ public class PlanExecutor {
                 摘要:
                 """ + summary));
 
+        if (answerChunkCallback != null) {
+            return llmClient.chatStreamText(messages, answerChunkCallback);
+        }
         ChatResponse finalResponse = llmClient.chat(messages, List.of());
         return finalResponse.content();
     }
